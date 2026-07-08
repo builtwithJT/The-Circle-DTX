@@ -333,20 +333,43 @@ function launchSparks(themeEmojis) {
   }
 }
 
+// Uses CounterAPI (free, no signup/auth needed) so votes are shared live across every phone,
+// even once this page is hosted on GitHub Pages instead of the Claude artifact preview.
+const NAMESPACE = "dtx-the-circle-walk-2026";
+
+function extractCount(res) {
+  if (!res) return 0;
+  if (typeof res.count === 'number') return res.count;
+  if (typeof res.value === 'number') return res.value;
+  if (res.data && typeof res.data.up_count === 'number') return res.data.up_count;
+  if (res.data && typeof res.data.count === 'number') return res.data.count;
+  return 0;
+}
+
 async function getCounts(key) {
   try {
-    const res = await window.storage.get(key, true);
-    return res ? JSON.parse(res.value) : { a: 0, b: 0 };
+    const [resA, resB] = await Promise.all([
+      fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-a`).then(r => r.json()),
+      fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-b`).then(r => r.json())
+    ]);
+    return { a: extractCount(resA), b: extractCount(resB) };
   } catch (e) {
     return { a: 0, b: 0 };
   }
 }
 
+async function incrementCount(key, choice) {
+  try {
+    const res = await fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-${choice}/up`).then(r => r.json());
+    return extractCount(res);
+  } catch (e) {
+    return null;
+  }
+}
+
 async function vote(pollId, choice) {
   const poll = POLLS[pollId];
-  const counts = await getCounts(poll.key);
-  counts[choice] = (counts[choice] || 0) + 1;
-  await window.storage.set(poll.key, JSON.stringify(counts), true);
+  await incrementCount(poll.key, choice);
   localStorage.setItem('circle_voted_' + pollId, choice);
   launchSparks(poll.ambient);
   const card = document.getElementById('poll-container');
