@@ -347,35 +347,35 @@ function launchSparks(themeEmojis) {
   }
 }
 
-// Uses CounterAPI (free, no signup/auth needed) so votes are shared live across every phone,
+// Uses CountAPI (free, no signup/auth needed) so votes are shared live across every phone,
 // even once this page is hosted on GitHub Pages instead of the Claude artifact preview.
+// Response shape is always guaranteed to be { value: N }, so counts reliably update.
 const NAMESPACE = "dtx-the-circle-walk-2026";
 
-function extractCount(res) {
-  if (!res) return 0;
-  if (typeof res.count === 'number') return res.count;
-  if (typeof res.value === 'number') return res.value;
-  if (res.data && typeof res.data.up_count === 'number') return res.data.up_count;
-  if (res.data && typeof res.data.count === 'number') return res.data.count;
-  return 0;
+async function getSingleCount(fullKey) {
+  try {
+    const res = await fetch(`https://api.countapi.xyz/get/${NAMESPACE}/${fullKey}`);
+    if (!res.ok) return 0; // 404 = counter doesn't exist yet, i.e. 0 votes so far
+    const data = await res.json();
+    return typeof data.value === 'number' ? data.value : 0;
+  } catch (e) {
+    return 0;
+  }
 }
 
 async function getCounts(key) {
-  try {
-    const [resA, resB] = await Promise.all([
-      fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-a`).then(r => r.json()),
-      fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-b`).then(r => r.json())
-    ]);
-    return { a: extractCount(resA), b: extractCount(resB) };
-  } catch (e) {
-    return { a: 0, b: 0 };
-  }
+  const [a, b] = await Promise.all([
+    getSingleCount(`${key}-a`),
+    getSingleCount(`${key}-b`)
+  ]);
+  return { a, b };
 }
 
 async function incrementCount(key, choice) {
   try {
-    const res = await fetch(`https://api.counterapi.dev/v1/${NAMESPACE}/${key}-${choice}/up`).then(r => r.json());
-    return extractCount(res);
+    const res = await fetch(`https://api.countapi.xyz/hit/${NAMESPACE}/${key}-${choice}`);
+    const data = await res.json();
+    return typeof data.value === 'number' ? data.value : null;
   } catch (e) {
     return null;
   }
