@@ -234,6 +234,20 @@
   }
   .switch-btn:hover { color: var(--gold); border-color: var(--gold); }
 
+  .revote-btn {
+    display: block;
+    margin: 4px auto 0;
+    background: transparent;
+    border: none;
+    color: var(--gold);
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
   .footer-note {
     font-size: 12px;
     color: var(--muted);
@@ -378,6 +392,11 @@ async function vote(pollId, choice) {
   render();
 }
 
+function revote(pollId) {
+  localStorage.removeItem('circle_voted_' + pollId);
+  render();
+}
+
 async function render() {
   const poll = POLLS[currentPoll];
   const counts = await getCounts(poll.key);
@@ -396,7 +415,10 @@ async function render() {
       </div>
     `;
   } else {
-    optionsHtml = `<div class="voted-note">Thank you for weighing in — here's where the circle stands</div>`;
+    optionsHtml = `
+      <div class="voted-note">Thank you for weighing in — here's where the circle stands</div>
+      <button class="revote-btn" onclick="revote('${currentPoll}')">↺ Vote again</button>
+    `;
   }
 
   const ambientHtml = poll.ambient.map((e, i) => {
@@ -421,7 +443,7 @@ async function render() {
         <div class="bar-label"><span>${poll.optB.emoji} ${poll.optB.label}</span><span class="pct">${pctB}%</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:${pctB}%"></div></div>
       </div>
-      <div class="total-note">${total} vote${total===1?'':'s'} cast</div>
+      <div class="total-note">${total} response${total===1?'':'s'} submitted</div>
     </div>
   `;
 
