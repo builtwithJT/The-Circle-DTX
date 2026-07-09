@@ -347,44 +347,123 @@ function launchSparks(themeEmojis) {
   }
 }
 
-// Uses CountAPI (free, no signup/auth needed) so votes are shared live across every phone,
-// even once this page is hosted on GitHub Pages instead of the Claude artifact preview.
-// Response shape is always guaranteed to be { value: N }, so counts reliably update.
+// Uses Abacus (free, no signup/auth needed, actively maintained) so votes are shared live
+// across every phone, even once this page is hosted on GitHub Pages instead of the Claude
+// artifact preview.
+//
+// IMPORTANT: this uses JSONP (a <script> tag request), not fetch(). Counter services like
+// this are frequently blocked by browser CORS policy when called with fetch — their own docs
+// show a JSONP callback pattern for exactly that reason. JSONP sidesteps CORS entirely because
+// it's just a script tag loading, not a cross-origin XHR/fetch request.
+//
+// Votes also auto-reset every 30 minutes: each 30-minute window gets its own counter key, so a
+// new group automatically starts a fresh poll without anyone needing to manually clear anything.
 const NAMESPACE = "dtx-the-circle-walk-2026";
+const FETCH_TIMEOUT_MS = 6000;
+const RESET_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
-async function getSingleCount(fullKey) {
+function currentWindowId() {
+  return Math.floor(Date.now() / RESET_WINDOW_MS);
+}
+
+function jsonpRequest(url) {
+  return new Promise((resolve) => {
+    const callbackName = 'cb_' + Math.random().toString(36).slice(2) + Date.now();
+    let settled = false;
+
+    const cleanup = () => {
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    };
+
+    window[callbackName] = (data) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(data);
+    };
+
+    const script = document.createElement('script');
+    const sep = url.includes('?') ? '&' : '?';
+    script.src = `${url}${sep}callback=${callbackName}`;
+    script.onerror = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null);
+    };
+    document.body.appendChild(script);
+
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null);
+    }, FETCH_TIMEOUT_MS);
+  });
+}
+
+async function plainFetchJson(url) {
   try {
-    const res = await fetch(`https://api.countapi.xyz/get/${NAMESPACE}/${fullKey}`);
-    if (!res.ok) return 0; // 404 = counter doesn't exist yet, i.e. 0 votes so far
-    const data = await res.json();
-    return typeof data.value === 'number' ? data.value : 0;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.json();
   } catch (e) {
-    return 0;
+    return null; // CORS-blocked, network error, or timeout
   }
 }
 
+// Tries a normal fetch and a JSONP request at the same time — whichever actually
+// succeeds first wins. This protects against the two most common failure modes for
+// free counter APIs: fetch getting blocked by CORS, or an endpoint not supporting JSONP.
+async function robustGetJson(url) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let attemptsFinished = 0;
+
+    const tryResolve = (data) => {
+      if (resolved) return;
+      if (data && typeof data.value === 'number') {
+        resolved = true;
+        resolve(data);
+      } else {
+        attemptsFinished++;
+        if (attemptsFinished >= 2) resolve(null); // both attempts failed
+      }
+    };
+
+    plainFetchJson(url).then(tryResolve);
+    jsonpRequest(url).then(tryResolve);
+  });
+}
+
+async function getSingleCount(fullKey) {
+  const data = await robustGetJson(`https://abacus.jasoncameron.dev/get/${NAMESPACE}/${fullKey}`);
+  return data && typeof data.value === 'number' ? data.value : 0;
+}
+
 async function getCounts(key) {
+  const windowKey = `${key}-w${currentWindowId()}`;
   const [a, b] = await Promise.all([
-    getSingleCount(`${key}-a`),
-    getSingleCount(`${key}-b`)
+    getSingleCount(`${windowKey}-a`),
+    getSingleCount(`${windowKey}-b`)
   ]);
   return { a, b };
 }
 
 async function incrementCount(key, choice) {
-  try {
-    const res = await fetch(`https://api.countapi.xyz/hit/${NAMESPACE}/${key}-${choice}`);
-    const data = await res.json();
-    return typeof data.value === 'number' ? data.value : null;
-  } catch (e) {
-    return null;
-  }
+  const windowKey = `${key}-w${currentWindowId()}`;
+  const data = await robustGetJson(`https://abacus.jasoncameron.dev/hit/${NAMESPACE}/${windowKey}-${choice}`);
+  return data && typeof data.value === 'number' ? data.value : null;
 }
 
 async function vote(pollId, choice) {
   const poll = POLLS[pollId];
   await incrementCount(poll.key, choice);
-  localStorage.setItem('circle_voted_' + pollId, choice);
+  localStorage.setItem('circle_voted_' + pollId, JSON.stringify({ choice, window: currentWindowId() }));
   launchSparks(poll.ambient);
   const card = document.getElementById('poll-container');
   card.classList.add('pulse');
@@ -397,13 +476,29 @@ function revote(pollId) {
   render();
 }
 
+function getVotedChoice(pollId) {
+  const raw = localStorage.getItem('circle_voted_' + pollId);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    // if the saved vote is from a previous 30-minute window, treat this as a fresh poll
+    if (parsed.window !== currentWindowId()) {
+      localStorage.removeItem('circle_voted_' + pollId);
+      return null;
+    }
+    return parsed.choice;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function render() {
   const poll = POLLS[currentPoll];
   const counts = await getCounts(poll.key);
   const total = (counts.a || 0) + (counts.b || 0);
   const pctA = total ? Math.round((counts.a / total) * 100) : 0;
   const pctB = total ? Math.round((counts.b / total) * 100) : 0;
-  const votedChoice = localStorage.getItem('circle_voted_' + currentPoll);
+  const votedChoice = getVotedChoice(currentPoll);
   const container = document.getElementById('poll-container');
 
   let optionsHtml = '';
